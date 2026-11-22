@@ -1,0 +1,109 @@
+# Compila la APK en los servidores de GitHub (gratis en repositorios públicos)
+# y la publica en "Releases". Las apps instaladas la detectan y ofrecen instalarla.
+#
+# Se ejecuta solo con cada cambio en la rama main (salvo cambios de documentación),
+# o a mano desde la pestaña "Actions" -> "Compilar APK" -> "Run workflow".
+#
+# Necesita dos secretos del repositorio (Settings -> Secrets and variables -> Actions):
+#   ESC_KEYSTORE_B64       la clave de firma en base64
+#   ESC_KEYSTORE_PASSWORD  su contraseña
+# Están anotados en el archivo de RESPALDO que quedó en la PC y en Drive (nunca en este repositorio).
+
+name: Compilar APK
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: compilar-apk
+  cancel-in-progress: false
+
+jobs:
+  compilar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Bajar el código
+        uses: actions/checkout@v4
+
+      - name: Instalar Java 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Preparar Android SDK (ya viene instalado en el servidor)
+        run: |
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          [ -x "$SDKM" ] || SDKM="$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | tail -1)"
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" "platforms;android-37" > /dev/null || echo "La plataforma la baja Gradle si hace falta"
+
+      - name: Preparar Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Revisar que estén los secretos
+        id: secretos
+        env:
+          B64: ${{ secrets.ESC_KEYSTORE_B64 }}
+          CLAVE: ${{ secrets.ESC_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$B64" ] || [ -z "$CLAVE" ]; then
+            echo "::warning::Faltan los secretos ESC_KEYSTORE_B64 y/o ESC_KEYSTORE_PASSWORD (ver archivo de RESPALDO). Se compila sólo para probar, sin publicar."
+            echo "firmado=no" >> "$GITHUB_OUTPUT"
+          else
+            echo "$B64" | base64 -d > "$RUNNER_TEMP/escuela.jks"
+            echo "firmado=si" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compilar APK firmada
+        if: steps.secretos.outputs.firmado == 'si'
+        env:
+          ESC_KEYSTORE_PATH: ${{ runner.temp }}/escuela.jks
+          ESC_KEYSTORE_PASSWORD: ${{ secrets.ESC_KEYSTORE_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace assembleRelease
+
+      - name: Compilar de prueba (sin firma, no se publica)
+        if: steps.secretos.outputs.firmado != 'si'
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace assembleRelease
+          echo "::error::Compiló bien, pero falta cargar los secretos de firma para publicar."
+          exit 1
+
+      - name: Preparar publicación
+        id: datos
+        run: |
+          VC=$((GITHUB_RUN_NUMBER + 1))
+          VN="1.${GITHUB_RUN_NUMBER}"
+          cp app/build/outputs/apk/release/app-release.apk Escuela-CDL.apk
+          NOTAS=$(git log -1 --pretty=%s | jq -Rs .)
+          printf '{"versionCode":%s,"versionName":"%s","apk":"https://github.com/%s/releases/download/v%s/Escuela-CDL.apk","notas":%s}\n' \
+            "$VC" "$VN" "$GITHUB_REPOSITORY" "$VN" "$NOTAS" > version.json
+          cat version.json
+          echo "vn=$VN" >> "$GITHUB_OUTPUT"
+
+      - name: Publicar en Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.datos.outputs.vn }}
+          name: Escuela CDL ${{ steps.datos.outputs.vn }}
+          body: |
+            Descargá **Escuela-CDL.apk** e instalala. Las apps ya instaladas la ofrecen solas al abrirse.
+          files: |
+            Escuela-CDL.apk
+            version.json
+          make_latest: true
+
+      - name: Borrar la clave del servidor
+        if: always()
+        run: rm -f "$RUNNER_TEMP/escuela.jks"
