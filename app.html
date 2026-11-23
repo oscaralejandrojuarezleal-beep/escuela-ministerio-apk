@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0c2866">
+<title>Escuela de Ministerio · Casa de Luz</title>
+<link rel="icon" href="icono-192.png">
+<style>
+  html,body{margin:0;height:100%;background:linear-gradient(160deg,#071a45,#0c2866 55%,#1c4fc4);color:#fff;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  .caja{min-height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:24px;box-sizing:border-box;text-align:center}
+  img{width:96px;height:96px;border-radius:24px}
+  p{margin:0;max-width:340px;line-height:1.5;opacity:.92}
+  .rueda{width:42px;height:42px;border-radius:50%;border:4px solid rgba(255,255,255,.25);border-top-color:#fff;animation:g 1s linear infinite}
+  @keyframes g{to{transform:rotate(360deg)}}
+  button{border:0;border-radius:14px;padding:13px 22px;font-weight:800;font-size:15px;background:#fff;color:#0c2866;cursor:pointer}
+  .oculto{display:none}
+</style>
+</head>
+<body>
+<div class="caja">
+  <img src="icono-192.png" alt="">
+  <div id="rueda" class="rueda"></div>
+  <p id="mensaje">Abriendo la app…</p>
+  <button id="reintentar" class="oculto" type="button" onclick="location.reload()">Reintentar</button>
+</div>
+<script>
+/* Versión web de la app de la Escuela, desde GitHub (para usar en la PC o en cualquier navegador).
+ * Es la MISMA app que la APK: baja el código del servidor una vez, lo guarda en el equipo y
+ * solo lo vuelve a bajar cuando se publica una versión nueva (compara la "huella"). */
+(function () {
+  var API = 'https://script.google.com/macros/s/AKfycbyDsn6dRFauwni-w_nelkonynRKOR_uFSmtEV_SW9Z396vw-Z3Btoo9xjvbGWf8ciMl-A/exec';
+  var CLAVE = 'ESC_WEB_APP_V1';
+
+  function mensaje(t, error) {
+    document.getElementById('mensaje').textContent = t;
+    document.getElementById('rueda').classList.toggle('oculto', !!error);
+    document.getElementById('reintentar').classList.toggle('oculto', !error);
+  }
+  function llamar(fn, ms) {
+    var control = typeof AbortController === 'function' ? new AbortController() : null;
+    var reloj = setTimeout(function () { if (control) control.abort(); }, ms);
+    return fetch(API, {
+      method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, redirect: 'follow', cache: 'no-store',
+      body: JSON.stringify({ fn: fn, args: [] }), signal: control ? control.signal : undefined
+    }).then(function (r) { return r.json(); })
+      .then(function (d) { clearTimeout(reloj); if (!d || d.ok !== true) throw new Error((d && d.error) || 'Error del servidor'); return d.r; });
+  }
+  function leer() { try { return JSON.parse(localStorage.getItem(CLAVE) || 'null'); } catch (e) { return null; } }
+  function guardar(o) { try { localStorage.setItem(CLAVE, JSON.stringify(o)); } catch (e) {} }
+  function mostrar(html) {
+    var api = '<script>window.ESC_API_URL=' + JSON.stringify(API) + ';try{localStorage.setItem("ESC_API_URL",window.ESC_API_URL)}catch(e){}<\/script>';
+    html = /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, function (m) { return m + api; }) : api + html;
+    document.open(); document.write(html); document.close();
+  }
+  function bajar() {
+    mensaje('Descargando la app… (solo la primera vez o cuando hay versión nueva)');
+    return llamar('ESC_apiAppApk', 90000).then(function (r) {
+      if (!r || !r.html) throw new Error('La app llegó vacía');
+      guardar({ huella: r.build, html: r.html });
+      mostrar(r.html);
+    });
+  }
+
+  var local = leer();
+  if (!local || !local.html) {
+    bajar().catch(function (e) { mensaje('No se pudo abrir la app: ' + (e && e.message ? e.message : e), true); });
+    return;
+  }
+  // Ya está guardada: solo se pregunta si hay versión nueva (respuesta mínima).
+  llamar('ESC_apiHuellaApp', 4000).then(function (r) {
+    if (r && r.huella && r.huella !== local.huella) return bajar();
+    mostrar(local.html);
+  }).catch(function () { mostrar(local.html); }); // sin conexión o lento: se abre lo guardado
+})();
+</script>
+</body>
